@@ -1,0 +1,12 @@
+# recorded market data (large; never commit)
+data/
+*.parquet
+*.parquet.tmp
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.env
