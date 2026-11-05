@@ -112,6 +112,35 @@ from features import build, feature_columns
 df = build(start="2023-01")
 ```
 
+## Backtesting
+
+```bash
+python -m backtest                                  # ridge baseline on fwd_ret_4h, 2+ years of training
+python -m backtest --target fwd_ret_24h --enter-bps 40 --delay 1min
+```
+
+- **Spot, long or flat only.** No shorting or leverage, since retail derivatives aren't available in
+  Australia.
+- **Execution at a realistic price.** Each decision at `t` fills at the VWAP of the first minute
+  after `t`, not at the close the features were computed from.
+- **Costs.** Fees (10 bps, Binance's base spot taker rate) plus slippage (1 bp) are charged on every
+  change in position.
+- **Data gaps.** If there's no price, nothing trades.
+- **Walk-forward ([backtest/walkforward.py](backtest/walkforward.py)).** Every prediction comes from a
+  model refit monthly on earlier data only. Training rows whose target wasn't yet known at the start of
+  the test month are left out (the embargo), so there's no label overlap.
+- **Trading rule.** Go long when the predicted return beats the round-trip cost (`--enter-bps`,
+  default 22). Go flat when it drops below `--exit-bps` (default 0). The gap between the two keeps
+  the position from flipping on noise.
+
+The report shows:
+- rank IC, i.e. how well predictions order the actual returns, month by month
+- return, Sharpe, max drawdown, time in market, trades, turnover and costs, against buy and hold
+- returns by year
+
+Predictions and the equity curve are saved to `data/backtests/`. Any model with `fit(X, y)` and
+`predict(X)` plugs into `walk_forward`. See the ridge baseline in [backtest/models.py](backtest/models.py).
+
 ## Live recorder
 
 `python -m recorder` runs two recorders side by side, each on its own websocket connection
