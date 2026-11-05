@@ -81,6 +81,37 @@ coverage report and handle gaps explicitly rather than forward-filling across th
 
 Liquidations aren't in the archive at all; they would have to be recorded live.
 
+## Features
+
+```bash
+python -m features                      # -> data/features/BTCUSDT_1h.parquet, plus a coverage report
+```
+
+[features/build.py](features/build.py) turns the history into one row per hour (`--freq 15min` etc.
+for denser sampling). Each row stamped `t` holds:
+- features computed only from data public before `t`
+- `close`, the spot close at `t`
+- targets `fwd_ret_1h`, `fwd_ret_4h` and `fwd_ret_24h`, the forward log returns of spot
+
+| group | features | from |
+|---|---|---|
+| price/volatility | returns and realised vol over 1h–7d, range, position in the 24h/7d range, distance from 24h VWAP, volume vs its 7d norm | 2017 |
+| spot flow | taker buy/sell imbalance; large- and small-order imbalance, large-order share, average and largest order size | 2017 / trade bars |
+| futures | perp taker and large-order imbalance, perp/spot volume, basis, premium index and its 24h change | 2020 |
+| positioning | funding (per 8h) and vs its 7d mean; open-interest change over 1h–24h; account, top-trader and taker long/short ratios | 2020 |
+| book depth | perp bid/ask imbalance and total notional within ±1% and ±5% | 2023 |
+| calendar | hour of day, day of week | |
+
+Datasets missing for a period give NaN, not zeros. Gaps aren't papered over: windows need 80% of
+their minutes, and prices are carried forward at most 5 minutes. Open interest is lagged 5 minutes,
+because Binance publishes it late. A test perturbs all data after a cutoff and checks that no
+feature at or before it changes.
+
+```python
+from features import build, feature_columns
+df = build(start="2023-01")
+```
+
 ## Live recorder
 
 `python -m recorder` runs two recorders side by side, each on its own websocket connection
