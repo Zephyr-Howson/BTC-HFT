@@ -4,8 +4,9 @@ Short-horizon trading research on BTC/USDT, built from two data sources:
 
 1. **History** (`python -m history`): years of Binance public data (1m bars, tick trades, funding,
    open interest, futures book depth) downloaded from data.binance.vision.
-2. **Recorder** (`python -m recorder`): a live websocket feed of trades and the full order book,
-   which has no public history and so has to be recorded going forward.
+2. **Recorder** (`python -m recorder`): live spot trades and the full order book, plus futures
+   trades, mark price/funding, open interest and liquidations. The order book and liquidations have
+   no public history, so they have to be recorded going forward.
 
 Spot is what we trade. Futures data is only used for signals: funding, open interest and the
 perp premium often lead spot.
@@ -82,7 +83,10 @@ Liquidations aren't in the archive at all; they would have to be recorded live.
 
 ## Live recorder
 
-The recorder holds one websocket connection to Binance spot and writes four streams to Parquet:
+`python -m recorder` runs two recorders side by side, each on its own websocket connection
+(`--market spot` or `--market futures` runs just one).
+
+**Spot** (what we trade) is written to `data/binance/btcusdt/`:
 
 | stream | contents |
 |---|---|
@@ -91,17 +95,38 @@ The recorder holds one websocket connection to Binance spot and writes four stre
 | `depth_updates` | order-book diffs every 100ms, one row per changed price level (qty 0 = level removed) |
 | `depth_snapshots` | full 1000-level book snapshots on connect, on any sequence gap, and every 15 min |
 
-Each row has `recv_ns`, the local receive time in nanoseconds, alongside the exchange timestamps. The backtester will use both to model real latency. Keep your clock NTP-synced.
+**USDⓈ-M futures** (signals only) is written to `data/binance_futures/btcusdt/`:
 
-Files land in `data/binance/btcusdt/<stream>/date=YYYY-MM-DD/<first_recv_ns>.parquet` (UTC dates, zstd-compressed, written atomically). Up to 60s of data is buffered in memory and flushed on shutdown.
+| stream | contents |
+|---|---|
+| `agg_trades` | every perp trade (aggregated by taker order) |
+| `mark_price` | mark price, index price, estimated funding rate and next funding time, every second |
+| `liquidations` | liquidation orders for **every** futures symbol (filter on `symbol`); `SELL` = a long was liquidated |
+| `open_interest` | BTCUSDT open interest, polled over REST every `--oi-interval` seconds (default 10) |
+
+Notes on the futures feed:
+- **Liquidations are a sample, not a complete record.** Binance pushes at most one liquidation per symbol per
+  second, and its archive has no liquidation history, so recording them live is the only way to get them.
+- **Binance has split its futures websocket paths.** `/market` carries trades, mark price and liquidations;
+  `/public` carries best bid/ask and depth. The legacy `/stream` path now silently delivers only best bid/ask,
+  so the recorder uses `/market`. Perp best bid/ask (~400 msgs/s) isn't recorded: it isn't needed for signals.
+
+Each row has `recv_ns`, the local receive time in nanoseconds, alongside the exchange timestamps. The
+backtester will use both to model real latency. Keep your clock NTP-synced. On Windows the clock only ticks
+every 1–16 ms, so back-to-back messages can share a `recv_ns`. Always order events by exchange ids (update id,
+trade id), never by `recv_ns`. Run the recorder on Linux if you want precise latency measurements.
+
+Files land in `<market>/btcusdt/<stream>/date=YYYY-MM-DD/<first_recv_ns>.parquet` under `data/` (UTC dates,
+zstd-compressed, written atomically). Up to 60s of data is buffered in memory and flushed on shutdown.
 
 ```bash
 python -m recorder                      # Ctrl-C to stop cleanly
-python scripts/inspect_data.py          # health check: row counts, latency, gaps
+python scripts/inspect_data.py          # health check: rows, latency, gaps, funding, liquidations
 ```
 
-Options: `--symbol`, `--out`, `--snapshot-interval`, `--depth-limit`, `--flush-seconds`, `--log-level`.
-If `stream.binance.com` is blocked on your network, use `--endpoint vision` (Binance's market-data-only mirrors).
+Options: `--market`, `--symbol`, `--out`, `--snapshot-interval`, `--depth-limit`, `--oi-interval`,
+`--flush-seconds`, `--log-level`. If `stream.binance.com` is blocked on your network, use `--endpoint vision`
+(Binance's market-data-only mirrors for spot).
 
 ### Running it for real
 

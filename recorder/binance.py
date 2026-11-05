@@ -15,10 +15,9 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Coroutine
 
-import aiohttp
-from websockets.asyncio.client import connect
-
+from .base import StreamRecorder
 from .schemas import (
     SCHEMAS,
     parse_book_ticker,
@@ -26,7 +25,6 @@ from .schemas import (
     parse_snapshot,
     parse_trade,
 )
-from .writer import BufferedParquetWriter
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +36,10 @@ ENDPOINTS = {
 }
 
 
-class BinanceRecorder:
+class BinanceRecorder(StreamRecorder):
+    RATE_KEYS = ("msgs", "trades", "depth", "ticker")
+    TOTAL_KEYS = ("gaps", "reconnects", "snapshots")
+
     def __init__(
         self,
         symbol: str = "BTCUSDT",
@@ -51,69 +52,27 @@ class BinanceRecorder:
         self.symbol = symbol.lower()
         ws_base, self.rest_depth = ENDPOINTS[endpoint]
         streams = [f"{self.symbol}@trade", f"{self.symbol}@bookTicker", f"{self.symbol}@depth@100ms"]
-        self.ws_url = f"{ws_base}?streams={'/'.join(streams)}"
+        super().__init__(f"{ws_base}?streams={'/'.join(streams)}", Path(out_dir) / "binance" / self.symbol,
+                         SCHEMAS, flush_seconds)
         self.snapshot_interval = snapshot_interval
         self.depth_limit = depth_limit
-
-        root = Path(out_dir) / "binance" / self.symbol
-        self.writers = {
-            name: BufferedParquetWriter(root, name, schema, max_seconds=flush_seconds)
-            for name, schema in SCHEMAS.items()
-        }
 
         self.session = 0
         self.prev_final_id: int | None = None
         self._snapshot_task: asyncio.Task | None = None
-        self._http: aiohttp.ClientSession | None = None
-        self.stats = {"msgs": 0, "trades": 0, "depth": 0, "ticker": 0, "gaps": 0, "reconnects": 0, "snapshots": 0}
 
-    # ---- lifecycle ---------------------------------------------------------
+    # ---- hooks -------------------------------------------------------------
 
-    async def run(self) -> None:
-        log.info("recording %s -> %s", self.ws_url, self.writers["trades"].dir.parent)
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as http:
-            self._http = http
-            background = [
-                asyncio.create_task(self._flush_loop()),
-                asyncio.create_task(self._stats_loop()),
-                asyncio.create_task(self._snapshot_timer()),
-            ]
-            try:
-                await self._ws_loop()
-            finally:
-                if self._snapshot_task:
-                    background.append(self._snapshot_task)
-                for t in background:
-                    t.cancel()
-                await asyncio.gather(*background, return_exceptions=True)
-                await self.flush_all()
-                log.info("flushed buffers, shutting down")
+    def on_connect(self) -> None:
+        self.session = time.time_ns()
+        self.prev_final_id = None  # forces a fresh snapshot
+        log.info("session %d", self.session)
 
-    async def flush_all(self) -> None:
-        for w in self.writers.values():
-            await w.flush()
+    def background(self) -> list[Coroutine]:
+        return [self._snapshot_timer()]
 
-    # ---- websocket ---------------------------------------------------------
-
-    async def _ws_loop(self) -> None:
-        backoff = 1.0
-        while True:
-            try:
-                async with connect(self.ws_url, max_size=2**23, open_timeout=10) as ws:
-                    self.session = time.time_ns()
-                    self.prev_final_id = None  # forces a fresh snapshot
-                    log.info("connected (session %d)", self.session)
-                    backoff = 1.0
-                    async for raw in ws:
-                        self._handle(raw, time.time_ns())
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # network errors, server closes, etc.
-                log.warning("websocket error: %r", exc)
-            self.stats["reconnects"] += 1
-            log.info("reconnecting in %.0fs", backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60.0)
+    def pending(self) -> list[asyncio.Task]:
+        return [self._snapshot_task] if self._snapshot_task else []
 
     def _handle(self, raw: str | bytes, recv_ns: int) -> None:
         msg = json.loads(raw)
@@ -173,22 +132,3 @@ class BinanceRecorder:
         while True:
             await asyncio.sleep(self.snapshot_interval)
             self._request_snapshot("periodic")
-
-    # ---- housekeeping ------------------------------------------------------
-
-    async def _flush_loop(self) -> None:
-        while True:
-            await asyncio.sleep(1.0)
-            for w in self.writers.values():
-                await w.maybe_flush()
-
-    async def _stats_loop(self) -> None:
-        while True:
-            await asyncio.sleep(60.0)
-            s = self.stats
-            log.info(
-                "last 60s: msgs=%d trades=%d depth=%d ticker=%d | total gaps=%d reconnects=%d snapshots=%d",
-                s["msgs"], s["trades"], s["depth"], s["ticker"], s["gaps"], s["reconnects"], s["snapshots"],
-            )
-            for k in ("msgs", "trades", "depth", "ticker"):
-                s[k] = 0

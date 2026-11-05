@@ -1,4 +1,4 @@
-"""Parquet schemas and parsers for Binance spot market-data messages.
+"""Parquet schemas and parsers for Binance spot and USDⓈ-M futures market-data messages.
 
 Every row carries recv_ns: local wall-clock receive time in nanoseconds.
 Comparing it with the exchange's event time lets you measure your real
@@ -111,3 +111,110 @@ def parse_snapshot(d: dict, recv_ns: int, session: int, reason: str) -> list[dic
         for px, qty in d[key]:
             rows.append({**base, "side": side, "price": float(px), "qty": float(qty)})
     return rows
+
+
+# ---- USDⓈ-M futures (signals only) ------------------------------------------
+
+FUTURES_AGG_TRADES = pa.schema([
+    ("recv_ns", pa.int64()),
+    ("event_ms", pa.int64()),
+    ("trade_ms", pa.int64()),
+    ("agg_trade_id", pa.int64()),
+    ("first_trade_id", pa.int64()),
+    ("last_trade_id", pa.int64()),
+    ("price", pa.float64()),
+    ("qty", pa.float64()),
+    ("normal_qty", pa.float64()),  # Binance's "nq" field, as sent; null if absent
+    ("buyer_is_maker", pa.bool_()),
+])
+
+# Mark price, index price and funding, pushed every second.
+MARK_PRICE = pa.schema([
+    ("recv_ns", pa.int64()),
+    ("event_ms", pa.int64()),
+    ("mark_px", pa.float64()),
+    ("index_px", pa.float64()),
+    ("est_settle_px", pa.float64()),
+    ("funding_rate", pa.float64()),     # current estimate for the next settlement
+    ("next_funding_ms", pa.int64()),
+])
+
+# Liquidation orders for every futures symbol (not just ours).
+LIQUIDATIONS = pa.schema([
+    ("recv_ns", pa.int64()),
+    ("event_ms", pa.int64()),
+    ("trade_ms", pa.int64()),
+    ("symbol", pa.string()),
+    ("side", pa.string()),              # SELL = a long was liquidated, BUY = a short
+    ("order_type", pa.string()),
+    ("time_in_force", pa.string()),
+    ("orig_qty", pa.float64()),
+    ("price", pa.float64()),
+    ("avg_price", pa.float64()),
+    ("status", pa.string()),
+    ("last_filled_qty", pa.float64()),
+    ("filled_qty", pa.float64()),
+])
+
+OPEN_INTEREST = pa.schema([
+    ("recv_ns", pa.int64()),
+    ("time_ms", pa.int64()),
+    ("open_interest", pa.float64()),    # contracts (BTC)
+])
+
+FUTURES_SCHEMAS = {
+    "agg_trades": FUTURES_AGG_TRADES,
+    "mark_price": MARK_PRICE,
+    "liquidations": LIQUIDATIONS,
+    "open_interest": OPEN_INTEREST,
+}
+
+
+def parse_futures_agg_trade(d: dict, recv_ns: int) -> dict:
+    return {
+        "recv_ns": recv_ns,
+        "event_ms": d["E"],
+        "trade_ms": d["T"],
+        "agg_trade_id": d["a"],
+        "first_trade_id": d["f"],
+        "last_trade_id": d["l"],
+        "price": float(d["p"]),
+        "qty": float(d["q"]),
+        "normal_qty": float(d["nq"]) if "nq" in d else None,
+        "buyer_is_maker": d["m"],
+    }
+
+
+def parse_mark_price(d: dict, recv_ns: int) -> dict:
+    return {
+        "recv_ns": recv_ns,
+        "event_ms": d["E"],
+        "mark_px": float(d["p"]),
+        "index_px": float(d["i"]),
+        "est_settle_px": float(d["P"]),
+        "funding_rate": float(d["r"]),
+        "next_funding_ms": d["T"],
+    }
+
+
+def parse_liquidation(d: dict, recv_ns: int) -> dict:
+    o = d["o"]
+    return {
+        "recv_ns": recv_ns,
+        "event_ms": d["E"],
+        "trade_ms": o["T"],
+        "symbol": o["s"],
+        "side": o["S"],
+        "order_type": o["o"],
+        "time_in_force": o["f"],
+        "orig_qty": float(o["q"]),
+        "price": float(o["p"]),
+        "avg_price": float(o["ap"]),
+        "status": o["X"],
+        "last_filled_qty": float(o["l"]),
+        "filled_qty": float(o["z"]),
+    }
+
+
+def parse_open_interest(d: dict, recv_ns: int) -> dict:
+    return {"recv_ns": recv_ns, "time_ms": d["time"], "open_interest": float(d["openInterest"])}
