@@ -131,9 +131,32 @@ Options: `--market`, `--symbol`, `--out`, `--snapshot-interval`, `--depth-limit`
 ### Running it for real
 
 Recording only helps if it's continuous. A laptop that sleeps will leave gaps, which you'll see as new
-sessions and `connect` snapshots. Run it on an always-on machine or a small cloud VM (Tokyo or Singapore
-regions sit closer to Binance's servers) under `tmux` or a systemd service. Check disk usage after day one
-and plan storage from there.
+sessions and `connect` snapshots. Run it on an always-on Ubuntu machine: a small cloud VM (Tokyo or
+Singapore sit closest to Binance's servers) or a spare PC at home. Avoid US-based servers, because Binance
+blocks US IP addresses (HTTP 451).
+
+On a fresh Ubuntu 22.04+ server (x86 or ARM), as a normal user with sudo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zephyr-Howson/BTC-HFT/main/deploy/setup.sh | bash
+```
+
+[deploy/setup.sh](deploy/setup.sh) installs Python and chrony (NTP time sync), clones the repo to `~/BTC-HFT`,
+and installs two systemd units:
+- `btc-recorder.service` runs the recorder, restarts it on failure, and starts it at boot.
+- `btc-history.timer` updates the historical data daily at 02:30 UTC.
+
+Re-run the script to pull new code and restart. Set `HISTORY_ARGS="--trades-start 2017-08"` before running it
+for full tick history.
+
+```bash
+journalctl -u btc-recorder -f                              # live log
+~/BTC-HFT/.venv/bin/python ~/BTC-HFT/scripts/inspect_data.py ~/BTC-HFT/data
+df -h ~/BTC-HFT/data                                       # disk space
+```
+
+The recorder writes roughly 0.3 GB/day in quiet markets, and more on busy days, so plan on 100–200 GB a
+year. Check `df` after the first week.
 
 ### Rebuilding the order book
 
