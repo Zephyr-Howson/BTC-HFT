@@ -96,3 +96,15 @@ def test_ridge_recovers_a_linear_signal():
     assert "mostly_missing" not in m.cols
     assert m.weights()["a"] == pytest.approx(0.002, rel=0.05) and m.weights()["b"] == pytest.approx(-0.001, rel=0.1)
     assert np.corrcoef(m.predict(X), y)[0, 1] > 0.85
+
+
+def test_signal_report_finds_a_real_signal_and_not_noise():
+    from backtest.signals import report
+    t = hours(24 * 240)
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=len(t))
+    df = pd.DataFrame({"good": x, "noise": rng.normal(size=len(t)), "close": 1.0,
+                       "fwd_ret_1h": 0.001 * x + rng.normal(0, 0.003, len(t))}, index=t)
+    r = report(df).set_index("feature")
+    assert r.loc["good", "t"] > 10 and r.loc["good", "pos"] == 1 and r.loc["good", "q5_q1_bps"] > 15
+    assert abs(r.loc["noise", "t"]) < 4      # 8 months: |t| > 2 happens ~9% of the time by luck
