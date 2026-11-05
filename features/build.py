@@ -103,6 +103,19 @@ def _log(x: pd.Series) -> pd.Series:
     return np.log(x.where(x > 0))
 
 
+class _Sampled(dict):
+    """Keeps each feature only at the sample times: the 1m series are ~5M rows each, so holding
+    ~60 of them for 9 years would need several GB. Features combined later (ratios, differences)
+    are pointwise, so they come out the same from the sampled values."""
+
+    def __init__(self, sample: pd.DatetimeIndex) -> None:
+        super().__init__()
+        self.sample = sample
+
+    def __setitem__(self, key: str, value: pd.Series) -> None:
+        super().__setitem__(key, value.reindex(self.sample))
+
+
 def build(root: str | Path = "data/history", symbol: str = "BTCUSDT", start: str = "", end: str = "9999",
           freq: str = "1h") -> pd.DataFrame:
     """Build the feature table. start/end are YYYY-MM or YYYY-MM-DD labels, as for history.load."""
@@ -111,7 +124,10 @@ def build(root: str | Path = "data/history", symbol: str = "BTCUSDT", start: str
     src = _Sources(root, symbol, load_start, end)
     spot = src.bars("spot/klines_1m", KLINE_COLS)
     grid = src.grid
-    f: dict[str, pd.Series] = {}
+    sample = grid[grid == grid.floor(freq)]
+    if start:
+        sample = sample[sample >= pd.Timestamp(start, tz="UTC")]
+    f = _Sampled(sample)
 
     # Spot price and volatility (2017 onwards).
     close = spot.close.ffill(limit=MAX_FILL)
@@ -191,11 +207,7 @@ def build(root: str | Path = "data/history", symbol: str = "BTCUSDT", start: str
     for h, n in HORIZONS.items():
         f[f"fwd_ret_{h}"] = logc.shift(-n) - logc
 
-    # Sample.
-    sample = grid[grid == grid.floor(freq)]
-    if start:
-        sample = sample[sample >= pd.Timestamp(start, tz="UTC")]
-    out = pd.DataFrame({k: v.reindex(sample).to_numpy() for k, v in f.items()}, index=sample)
+    out = pd.DataFrame({k: v.to_numpy() for k, v in f.items()}, index=sample)
     out.insert(0, "close", close.reindex(sample).to_numpy())
     hour = sample.hour + sample.minute / 60
     out["hour_sin"], out["hour_cos"] = np.sin(2 * np.pi * hour / 24), np.cos(2 * np.pi * hour / 24)

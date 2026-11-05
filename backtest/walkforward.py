@@ -73,4 +73,4 @@ def long_flat(pred: pd.Series, enter: float, exit: float = 0.0) -> pd.Series:
 def information_coefficient(pred: pd.Series, actual: pd.Series) -> pd.Series:
     """Monthly rank correlation between predictions and realised targets."""
     both = pd.concat({"p": pred, "a": actual}, axis=1).dropna()
-    return both.groupby(_months(both.index)).apply(lambda g: g.p.corr(g.a, method="spearman"))
+    return both.groupby(_months(both.index)).apply(lambda g: g.p.rank().corr(g.a.rank()))  # Spearman without scipy
