@@ -76,6 +76,21 @@ def run(weights: pd.Series, prices: pd.Series, fee_bps: float = FEE_BPS,
     return Result(net, held, cost, asset, fee_bps + slippage_bps, per_year)
 
 
+def random_timing(weights: pd.Series, prices: pd.Series, n: int = 200, min_shift: int = 30, seed: int = 0,
+                  fee_bps: float = FEE_BPS, slippage_bps: float = SLIPPAGE_BPS) -> np.ndarray:
+    """Sharpe ratios of the same weight path, circularly shifted by random offsets against the prices.
+
+    Each copy has the same exposure, holding periods and turnover as the strategy, but its timing
+    has nothing to do with the market. If the strategy doesn't beat most copies, its result comes
+    from how much it holds, not when.
+    """
+    rng = np.random.default_rng(seed)
+    w = weights.to_numpy(dtype=float)
+    shifts = rng.integers(min_shift, len(w) - min_shift, size=n)
+    return np.array([run(pd.Series(np.roll(w, k), index=weights.index), prices, fee_bps, slippage_bps)
+                     .summary()["sharpe"] for k in shifts])
+
+
 def _summary(ret: pd.Series, pos: pd.Series, cost: pd.Series, per_year: float) -> dict[str, float]:
     equity = (1 + ret).cumprod()
     years = len(ret) / per_year
@@ -89,6 +104,7 @@ def _summary(ret: pd.Series, pos: pd.Series, cost: pd.Series, per_year: float) -
         "sharpe": ret.mean() / sd * np.sqrt(per_year) if sd > 0 else np.nan,
         "max_drawdown": (equity / equity.cummax() - 1).min(),
         "time_in_market": in_market.mean(),
+        "exposure": pos.mean(),
         "trades": entries,
         "avg_hold_periods": runs.value_counts().mean() if entries else 0.0,
         "turnover_per_year": pos.diff().abs().fillna(pos.iloc[0]).sum() / years if years > 0 else np.nan,

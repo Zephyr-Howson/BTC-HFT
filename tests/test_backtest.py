@@ -147,3 +147,22 @@ def test_predictive_ic_is_unbiased_on_a_random_walk():
     y, h = lp.shift(-24) - lp, pd.Timedelta("24h")
     for x in (lp - lp.shift(168), lp - lp.rolling(720).mean()):
         assert abs(predictive_ic(x, y, h).mean()) < 0.03
+
+
+def test_smoothing_steps_and_random_timing():
+    from backtest.engine import random_timing
+    from backtest.rules import smooth, steps
+
+    idx = pd.date_range("2024-01-01", periods=6, freq="D", tz="UTC")
+    w = pd.Series([0.0, 0.3, 0.6, 0.9, np.nan, 0.5], index=idx)
+    assert np.allclose(smooth(w, 3).iloc[:4], [0.0, 0.15, 0.3, 0.6])
+    assert steps(w, 3).tolist()[:4] == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
+    assert np.isnan(steps(w, 3).iloc[4])
+
+    # A strategy that knows tomorrow's move beats every randomly shifted copy of itself
+    rng = np.random.default_rng(1)
+    idx = pd.date_range("2020-01-01", periods=600, freq="D", tz="UTC")
+    px = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.03, 600))), index=idx)
+    foresight = (px.shift(-1) > px).astype(float)
+    rnd = random_timing(foresight, px, n=50)
+    assert len(rnd) == 50 and (run(foresight, px).summary()["sharpe"] > rnd).all()

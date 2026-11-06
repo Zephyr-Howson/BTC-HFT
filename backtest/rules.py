@@ -38,6 +38,16 @@ def with_band(weights: pd.Series, band: float = 0.1) -> pd.Series:
     return pd.Series(out, index=weights.index, name="weight")
 
 
+def smooth(weights: pd.Series, periods: int) -> pd.Series:
+    """Trailing mean over the last `periods` rows, so one noisy day moves the target less."""
+    return weights.rolling(periods, min_periods=1).mean() if periods > 1 else weights
+
+
+def steps(weights: pd.Series, n: int = 3) -> pd.Series:
+    """Round to the nearest 1/n (n=3: 0, 1/3, 2/3, 1). NaN stays NaN."""
+    return (weights * n).round() / n
+
+
 def at_hour(df: pd.DataFrame | pd.Series, hour: int = 0) -> pd.DataFrame | pd.Series:
     """Rows at hh:00 UTC only: one decision a day."""
     return df[(df.index.hour == hour) & (df.index.minute == 0)]
