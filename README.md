@@ -134,12 +134,37 @@ python -m backtest --target fwd_ret_24h --enter-bps 40 --delay 1min
   the position from flipping on noise.
 
 The report shows:
-- rank IC, i.e. how well predictions order the actual returns, month by month
+- predictive IC, i.e. how well predictions line up with the actual returns, month by month, with a
+  t-stat (see below)
 - return, Sharpe, max drawdown, time in market, trades, turnover and costs, against buy and hold
 - returns by year
 
 Predictions and the equity curve are saved to `data/backtests/`. Any model with `fit(X, y)` and
-`predict(X)` plugs into `walk_forward`. See the ridge baseline in [backtest/models.py](backtest/models.py).
+`predict(X)` plugs into `walk_forward`. Two models are included in [backtest/models.py](backtest/models.py):
+- `ridge`, a deliberately simple baseline
+- `composite`, which each month picks the features with the most reliable past IC and averages
+  their signed percentile ranks
+
+### Measuring signals without fooling yourself
+
+```bash
+python -m backtest.signals              # every feature x horizon: IC, t-stat, stability, top-vs-bottom spread
+python -m backtest.variants             # pre-registered daily long-only comparison (trend filter, sizing)
+```
+
+Correlating a feature with returns *within* each month is biased for slow price-level features. Even on
+a pure random walk it shows strong "mean reversion" (IC about −0.1 to −0.3 at 24h). The cause is the
+Dickey-Fuller/Stambaugh small-sample bias.
+
+[backtest/stats.py](backtest/stats.py) avoids it as follows:
+- each feature is scored against its own trailing 90 days
+- returns are scaled by past volatility
+- nothing is demeaned within the window
+- the t-stat is Newey-West, because slow features give runs of same-sign months
+
+A test checks the statistic stays near zero on a random walk.
+
+Treat the backtest's profit and loss as the final word. It can't be fooled this way.
 
 ## Live recorder
 

@@ -100,11 +100,50 @@ def test_ridge_recovers_a_linear_signal():
 
 def test_signal_report_finds_a_real_signal_and_not_noise():
     from backtest.signals import report
-    t = hours(24 * 240)
+    t = hours(24 * 400)
     rng = np.random.default_rng(3)
     x = rng.normal(size=len(t))
     df = pd.DataFrame({"good": x, "noise": rng.normal(size=len(t)), "close": 1.0,
                        "fwd_ret_1h": 0.001 * x + rng.normal(0, 0.003, len(t))}, index=t)
     r = report(df).set_index("feature")
-    assert r.loc["good", "t"] > 10 and r.loc["good", "pos"] == 1 and r.loc["good", "q5_q1_bps"] > 15
-    assert abs(r.loc["noise", "t"]) < 4      # 8 months: |t| > 2 happens ~9% of the time by luck
+    assert r.loc["good", "t"] > 10 and r.loc["good", "pos"] == 1 and r.loc["good", "top_bot_bps"] > 15
+    assert abs(r.loc["noise", "t"]) < 4
+
+
+def test_rank_composite_picks_real_signals_with_their_signs():
+    from backtest.models import RankComposite
+    t = hours(24 * 640)
+    rng = np.random.default_rng(4)
+    X = pd.DataFrame(rng.normal(size=(len(t), 4)), index=t, columns=["up", "down", "noise1", "noise2"])
+    X.loc[X.index < "2024-06-01", "down"] = np.nan          # a feature that starts later
+    y = pd.Series(0.001 * X.up.fillna(0) - 0.001 * X.down.fillna(0) + rng.normal(0, 0.004, len(t)), index=t,
+                  name="fwd_ret_1h")
+    m = RankComposite(min_t=3).fit(X, y)
+    assert set(m.chosen.index) == {"up", "down"}
+    assert m.chosen["up"] > 0 > m.chosen["down"] and m.slope > 0
+    pred = pd.Series(m.predict(X), index=t)
+    assert np.corrcoef(pred, y)[0, 1] > 0.2
+    assert not pred.isna().any()                          # rows without "down" still use "up"
+
+
+def test_sizing_rules():
+    from backtest.rules import at_hour, past_percentile, trend_gate, with_band
+    t = hours(6)
+    pct = past_percentile(pd.Series([1.0, 3, 2, 0, 5, 4], t), min_periods=2)
+    assert np.isnan(pct.iloc[0]) and pct.iloc[1] == 1.0 and pct.iloc[2] == pytest.approx(2 / 3)
+    assert pct.iloc[3] == 0.25                                   # only earlier values count
+    gated = trend_gate(pd.Series([0.8, 0.8, 0.8], hours(3)), pd.Series([0.1, -0.1, np.nan], hours(3)))
+    assert gated.tolist() == [0.8, 0.0, 0.8]
+    w = with_band(pd.Series([0.5, 0.55, 0.65, 0.0, 0.05, np.nan, 1.0], hours(7)), band=0.1)
+    assert w.tolist() == [0.5, 0.5, 0.65, 0.0, 0.0, 0.0, 1.0]
+    assert len(at_hour(pd.Series(1, hours(72)))) == 3
+
+
+def test_predictive_ic_is_unbiased_on_a_random_walk():
+    """A within-month rank IC reports strong 'mean reversion' here (about -0.2 for px_vs_ma_30d)."""
+    from backtest.stats import predictive_ic
+    t = hours(24 * 365 * 3)
+    lp = pd.Series(np.cumsum(np.random.default_rng(5).normal(0, 0.007, len(t))), t)
+    y, h = lp.shift(-24) - lp, pd.Timedelta("24h")
+    for x in (lp - lp.shift(168), lp - lp.rolling(720).mean()):
+        assert abs(predictive_ic(x, y, h).mean()) < 0.03

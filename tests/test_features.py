@@ -98,7 +98,9 @@ def base(tmp_path_factory):
 
 def test_every_feature_filled_once_warmed_up(base):
     warm = base[base.index >= START + pd.Timedelta(days=8)].iloc[:-24]    # 7d windows full, targets known
-    empty = [c for c in base.columns if warm[c].isna().any()]
+    trend = [c for c in base.columns if c.endswith(("_30d", "_90d", "_200d"))]   # longer than the test data
+    assert len(trend) == 6 and base[trend].isna().all().all()
+    empty = [c for c in base.columns if c not in trend and warm[c].isna().any()]
     assert not empty, empty
     assert len(base) == DAYS * 24 and (base.index.minute == 0).all()
 
@@ -114,7 +116,7 @@ def test_no_lookahead(base, tmp_path):
     # The perturbation is visible straight after the cutoff, so the test can detect leaks.
     assert not np.allclose(base.loc[after, "ret_1h"].iloc[0], changed.loc[after, "ret_1h"].iloc[0])
     for c in cols:
-        if not c.endswith(("_sin", "_cos")):
+        if not c.endswith(("_sin", "_cos", "_30d", "_90d", "_200d")):
             assert not base.loc[after, c].equals(changed.loc[after, c]), c
 
 
@@ -147,3 +149,17 @@ def test_start_trims_rows_but_keeps_warmup(tmp_path):
     df = build(tmp_path, start="2024-01-09")
     assert df.index[0] == pd.Timestamp("2024-01-09", tz="UTC")
     assert not np.isnan(df.ret_7d.iloc[0])
+
+
+def test_trend_features_have_no_lookahead(tmp_path, monkeypatch):
+    import importlib
+    fb = importlib.import_module("features.build")     # the module, not the build() function
+    monkeypatch.setattr(fb, "TREND_DAYS", (2,))           # short enough for the synthetic data
+    cutoff = START + pd.Timedelta(days=6, hours=5)
+    make_history(tmp_path / "a")
+    make_history(tmp_path / "b", perturb_after=cutoff)
+    a, b = build(tmp_path / "a"), build(tmp_path / "b")
+    cols = ["ret_2d", "px_vs_ma_2d"]
+    assert a[cols].iloc[60:].notna().all().all()
+    pd.testing.assert_frame_equal(a.loc[a.index <= cutoff, cols], b.loc[b.index <= cutoff, cols])
+    assert not a.loc[a.index > cutoff, "px_vs_ma_2d"].equals(b.loc[b.index > cutoff, "px_vs_ma_2d"])

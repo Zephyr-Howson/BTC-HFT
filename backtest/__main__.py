@@ -11,6 +11,7 @@ from features import feature_columns
 
 from .engine import FEE_BPS, SLIPPAGE_BPS, execution_prices, run
 from .models import MODELS
+from .stats import t_stat
 from .walkforward import information_coefficient, long_flat, walk_forward
 
 
@@ -32,19 +33,28 @@ def main() -> None:
     a = p.parse_args()
 
     df = pd.read_parquet(a.features)
-    preds = walk_forward(df, feature_columns(df), a.target, MODELS[a.model], a.min_train_months, a.test_start)
+    fitted: list = []
+    preds = walk_forward(df, feature_columns(df), a.target, MODELS[a.model], a.min_train_months, a.test_start,
+                         fitted)
     test = preds.dropna().index
     df, preds = df.loc[test[0]:], preds.loc[test[0]:]
     weights = long_flat(preds, a.enter_bps / 1e4, a.exit_bps / 1e4)
     prices = execution_prices(df.index, a.history, delay=a.delay)
     res = run(weights, prices, a.fee_bps, a.slippage_bps)
 
-    ic = information_coefficient(preds, df[a.target])
+    ic = information_coefficient(preds, df[a.target], a.target)
     print(f"{a.model} on {a.target}, out of sample {test[0]:%Y-%m-%d} -> {test[-1]:%Y-%m-%d}, "
           f"costs {a.fee_bps + a.slippage_bps:g} bps per side")
-    print(f"rank IC: mean monthly {ic.mean():+.3f}, positive in {(ic > 0).mean():.0%} of {len(ic)} months\n")
+    print(f"predictive IC: mean monthly {ic.mean():+.3f} (t={t_stat(ic):+.1f}), "
+          f"positive in {(ic > 0).mean():.0%} of {len(ic)} months\n")
     table = pd.DataFrame({"strategy": res.summary(), "buy & hold": res.benchmark()})
     print(table.to_string(float_format=lambda v: f"{v:,.3f}"))
+    if hasattr(fitted[-1][1], "chosen"):
+        picks = pd.Series([c for _, m in fitted for c in m.chosen.index]).value_counts() / len(fitted)
+        last = fitted[-1][1].chosen
+        print("\nfeatures chosen (share of monthly refits; sign and training t-stat in the latest fit):")
+        for c, share in picks.items():
+            print(f"  {c:24s} {share:5.0%}" + (f"   t={last[c]:+.1f}" if c in last.index else ""))
     yearly = res.returns.groupby(res.returns.index.year).apply(lambda r: (1 + r).prod() - 1)
     bh = res.asset_returns.groupby(res.asset_returns.index.year).apply(lambda r: (1 + r).prod() - 1)
     print("\nreturn by year:\n" + pd.DataFrame({"strategy": yearly, "buy & hold": bh}).to_string(

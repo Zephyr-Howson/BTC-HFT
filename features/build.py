@@ -32,6 +32,7 @@ from history.datasets import in_range, load
 
 MIN = pd.Timedelta(minutes=1)
 WINDOWS = {"1h": 60, "4h": 240, "24h": 1440, "7d": 10080}
+TREND_DAYS = (30, 90, 200)    # long-term trend: returns and distance from moving averages
 HORIZONS = {"1h": 60, "4h": 240, "24h": 1440}
 COVERAGE = 0.8
 MAX_FILL = 5
@@ -119,8 +120,8 @@ class _Sampled(dict):
 def build(root: str | Path = "data/history", symbol: str = "BTCUSDT", start: str = "", end: str = "9999",
           freq: str = "1h") -> pd.DataFrame:
     """Build the feature table. start/end are YYYY-MM or YYYY-MM-DD labels, as for history.load."""
-    # Load a month earlier than asked, so the 7-day windows are warmed up at `start`.
-    load_start = (pd.Period(start[:7], "M") - 1).strftime("%Y-%m") if start else ""
+    # Load earlier than asked, so the 200-day trend windows are warmed up at `start`.
+    load_start = (pd.Period(start[:7], "M") - 8).strftime("%Y-%m") if start else ""
     src = _Sources(root, symbol, load_start, end)
     spot = src.bars("spot/klines_1m", KLINE_COLS)
     grid = src.grid
@@ -146,6 +147,12 @@ def build(root: str | Path = "data/history", symbol: str = "BTCUSDT", start: str
         lo = spot.low.rolling(n, min_periods=int(n * COVERAGE)).min()
         f[f"pos_in_range_{w}"] = (close - lo) / (hi - lo).where(hi > lo)
     f["volume_z_1h_7d"] = _log(_sum(spot.quote_volume, 60) / (_sum(spot.quote_volume, WINDOWS["7d"]) / 168))
+
+    # Long-term trend.
+    for days in TREND_DAYS:
+        n = days * 1440
+        f[f"ret_{days}d"] = logc - logc.shift(n)
+        f[f"px_vs_ma_{days}d"] = logc - _log(close.rolling(n, min_periods=int(n * COVERAGE)).mean())
 
     # Spot taker flow: klines cover 2017 onwards; trade bars add order-size detail.
     for w in ("1h", "4h", "24h"):
