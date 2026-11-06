@@ -149,8 +149,27 @@ Predictions and the equity curve are saved to `data/backtests/`. Any model with 
 
 ```bash
 python -m backtest.signals              # every feature x horizon: IC, t-stat, stability, top-vs-bottom spread
-python -m backtest.variants             # pre-registered daily long-only comparison (trend filter, sizing)
+python -m backtest.variants             # pre-registered daily long-only comparison (trend filter, sizing, costs)
+python -m backtest.refine               # pre-registered model comparison under one sizing rule
+python -m backtest.variants --final     # the locked final year: run once, at the end
 ```
+
+**Locked final year.** Data from 2025-11-01 on is cut off before any model is fitted, so refinement
+never sees it. Each strategy is also compared with its Sharpe before costs, and with 200 copies of its
+own positions shifted to random dates. Those copies hold the same amount and trade as often, so a
+strategy that doesn't beat them has no timing skill.
+
+**Chosen strategy (D2).**
+- Signal: baseline composite.
+- Sizing: one decision a day at 00:00 UTC. The position is today's prediction as a percentile of all
+  past ones, averaged over the last 5 days.
+- Trend filter: flat while price is below its 200-day average.
+- Band: rebalance only when the target moves 10 points or more.
+
+On the development period, D2 had a Sharpe of 1.02 against 0.95 for buy and hold. Its max drawdown was
+−43% against −77%. It beat 91% of random-timed copies, and fees came to 9% of account value. Broader,
+t-weighted, grouped and two-horizon models were no better. Without the trend filter, Sharpe was higher
+(1.15) but max drawdown was deeper (−52%). The filter was kept for drawdown protection.
 
 Correlating a feature with returns *within* each month is biased for slow price-level features. Even on
 a pure random walk it shows strong "mean reversion" (IC about −0.1 to −0.3 at 24h). The cause is the

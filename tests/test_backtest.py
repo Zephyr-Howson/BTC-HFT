@@ -166,3 +166,20 @@ def test_smoothing_steps_and_random_timing():
     foresight = (px.shift(-1) > px).astype(float)
     rnd = random_timing(foresight, px, n=50)
     assert len(rnd) == 50 and (run(foresight, px).summary()["sharpe"] > rnd).all()
+
+
+def test_group_composite_keeps_real_groups_and_t_weighting():
+    from backtest.models import GroupComposite, RankComposite
+    t = hours(24 * 640)
+    rng = np.random.default_rng(5)
+    f = rng.normal(size=len(t))
+    X = pd.DataFrame({"a1": f + rng.normal(0, 0.5, len(t)), "a2": -f + rng.normal(0, 0.5, len(t)),
+                      "n1": rng.normal(size=len(t)), "n2": rng.normal(size=len(t))}, index=t)
+    y = pd.Series(0.001 * f + rng.normal(0, 0.004, len(t)), index=t, name="fwd_ret_1h")
+    m = GroupComposite(groups={"real": ["a1", "a2"], "noise": ["n1", "n2"]}).fit(X, y)
+    assert list(m.chosen.index) == ["real"] and m.chosen["real"] > 0
+    assert m.members["real"].to_dict() == {"a1": 1.0, "a2": -1.0}    # a2 enters with its sign flipped
+    pred = pd.Series(m.predict(X), index=t)
+    assert np.corrcoef(pred, y)[0, 1] > 0.15
+    w = RankComposite(top=4, min_t=0, weighting="t").fit(X, y)
+    assert w.score(X).corr(pred) > 0.9                           # t-weighting is dominated by the real pair
