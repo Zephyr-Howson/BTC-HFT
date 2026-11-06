@@ -183,3 +183,12 @@ def test_group_composite_keeps_real_groups_and_t_weighting():
     assert np.corrcoef(pred, y)[0, 1] > 0.15
     w = RankComposite(top=4, min_t=0, weighting="t").fit(X, y)
     assert w.score(X).corr(pred) > 0.9                           # t-weighting is dominated by the real pair
+
+
+def test_idle_cash_earns_interest_for_the_time_held():
+    from backtest.engine import cash_rates
+    idx = pd.DatetimeIndex(["2024-01-01", "2024-01-02", "2024-01-04"], tz="UTC")   # 1 day, then 2 days
+    px = pd.Series(100.0, index=idx)
+    r = run(pd.Series([0.0, 0.5, 0.5], index=idx), px, fee_bps=0, slippage_bps=0, cash_rate=0.0365)
+    assert r.returns.tolist() == pytest.approx([0.0001, 0.5 * 0.0002, 0.0])           # nothing after the last bar
+    assert cash_rates(pd.DatetimeIndex(["2021-06-01", "2031-01-01"])).tolist() == [0.001, 0.036]

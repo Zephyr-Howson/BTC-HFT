@@ -21,6 +21,17 @@ from history.datasets import load
 FEE_BPS = 10.0       # Binance spot taker, base tier (7.5 paying fees in BNB)
 SLIPPAGE_BPS = 1.0   # BTCUSDT spread is ~0.01 USD; this covers impact for small orders
 
+# Interest earned on the part of the account not in BTC: approximate yearly average of the RBA cash rate,
+# which Australian high-interest savings accounts roughly track. Years after the table use its last value.
+CASH_RATE_BY_YEAR = {2017: 0.015, 2018: 0.015, 2019: 0.010, 2020: 0.003, 2021: 0.001, 2022: 0.013,
+                     2023: 0.039, 2024: 0.0435, 2025: 0.039, 2026: 0.036}
+
+
+def cash_rates(index: pd.DatetimeIndex) -> pd.Series:
+    """Annual cash rate in force at each time, from CASH_RATE_BY_YEAR."""
+    last = CASH_RATE_BY_YEAR[max(CASH_RATE_BY_YEAR)]
+    return pd.Series([CASH_RATE_BY_YEAR.get(y, last) for y in index.year], index=index, dtype=float)
+
 
 def execution_prices(times: pd.DatetimeIndex, root: str | Path = "data/history", symbol: str = "BTCUSDT",
                      delay: str = "0min") -> pd.Series:
@@ -60,8 +71,12 @@ class Result:
 
 
 def run(weights: pd.Series, prices: pd.Series, fee_bps: float = FEE_BPS,
-        slippage_bps: float = SLIPPAGE_BPS) -> Result:
-    """Backtest target weights (indexed by decision time) filled at prices (same index)."""
+        slippage_bps: float = SLIPPAGE_BPS, cash_rate: float | pd.Series = 0.0) -> Result:
+    """Backtest target weights (indexed by decision time) filled at prices (same index).
+
+    cash_rate: annual interest on the share of the account not in BTC, either one number or a series on
+    the same index (e.g. cash_rates(index)). It accrues for the actual time until the next decision.
+    """
     if not weights.index.equals(prices.index):
         raise ValueError("weights and prices must share an index")
     target = weights.astype(float).clip(0, 1)
@@ -70,14 +85,17 @@ def run(weights: pd.Series, prices: pd.Series, fee_bps: float = FEE_BPS,
     cost = held.diff().abs().fillna(held.iloc[0]) * (fee_bps + slippage_bps) / 1e4
     px = prices.ffill()
     asset = (px.shift(-1) / px - 1).fillna(0.0)
-    net = held * asset - cost
+    gaps = pd.Series(weights.index, index=weights.index).diff().shift(-1).fillna(pd.Timedelta(0))
+    interest = (1 - held) * cash_rate * (gaps / pd.Timedelta(days=365))
+    net = held * asset + interest - cost
     spacing = pd.Series(weights.index).diff().median()
     per_year = pd.Timedelta(days=365) / spacing if pd.notna(spacing) else 8760.0
     return Result(net, held, cost, asset, fee_bps + slippage_bps, per_year)
 
 
 def random_timing(weights: pd.Series, prices: pd.Series, n: int = 200, min_shift: int = 30, seed: int = 0,
-                  fee_bps: float = FEE_BPS, slippage_bps: float = SLIPPAGE_BPS) -> np.ndarray:
+                  fee_bps: float = FEE_BPS, slippage_bps: float = SLIPPAGE_BPS,
+                  cash_rate: float | pd.Series = 0.0) -> np.ndarray:
     """Sharpe ratios of the same weight path, circularly shifted by random offsets against the prices.
 
     Each copy has the same exposure, holding periods and turnover as the strategy, but its timing
@@ -87,7 +105,7 @@ def random_timing(weights: pd.Series, prices: pd.Series, n: int = 200, min_shift
     rng = np.random.default_rng(seed)
     w = weights.to_numpy(dtype=float)
     shifts = rng.integers(min_shift, len(w) - min_shift, size=n)
-    return np.array([run(pd.Series(np.roll(w, k), index=weights.index), prices, fee_bps, slippage_bps)
+    return np.array([run(pd.Series(np.roll(w, k), index=weights.index), prices, fee_bps, slippage_bps, cash_rate)
                      .summary()["sharpe"] for k in shifts])
 
 

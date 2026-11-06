@@ -12,6 +12,8 @@
 
 All: one decision a day at 00:00 UTC, filled at the next minute's VWAP; rebalance only when the
 target weight moves >= the band (default 10 points) or to exactly 0/1; 10 bps fee + 1 bp slippage.
+Idle cash earns about the RBA cash rate for each year (engine.CASH_RATE_BY_YEAR; --no-cash turns it off).
+The chosen strategy is D2; the rest are shown for comparison.
 The composite is refit monthly on hourly rows (walk-forward, 24h target), then sampled daily.
 
 Each strategy is also shown
@@ -35,7 +37,7 @@ import pandas as pd
 
 from features import feature_columns
 
-from .engine import execution_prices, random_timing, run
+from .engine import cash_rates, execution_prices, random_timing, run
 from .models import RankComposite
 from .rules import at_hour, past_percentile, smooth, steps, trend_gate, with_band
 from .stats import t_stat
@@ -62,10 +64,11 @@ def strategies(size: pd.Series, trend: pd.Series, band: float = 0.1) -> dict[str
     }
 
 
-def evaluate(weights: pd.Series, prices: pd.Series, n_random: int = 200) -> dict[str, float]:
-    s = run(weights, prices).summary()
-    s["sharpe_gross"] = run(weights, prices, 0.0, 0.0).summary()["sharpe"]
-    rnd = random_timing(weights, prices, n_random)
+def evaluate(weights: pd.Series, prices: pd.Series, n_random: int = 200,
+             cash_rate: float | pd.Series = 0.0) -> dict[str, float]:
+    s = run(weights, prices, cash_rate=cash_rate).summary()
+    s["sharpe_gross"] = run(weights, prices, 0.0, 0.0, cash_rate).summary()["sharpe"]
+    rnd = random_timing(weights, prices, n_random, cash_rate=cash_rate)
     s["random_sharpe"] = float(np.nanmedian(rnd))
     s["beats_random"] = float((s["sharpe"] > rnd).mean())
     return s
@@ -82,6 +85,7 @@ def main() -> None:
     p.add_argument("--min-train-months", type=int, default=24)
     p.add_argument("--random", type=int, default=200, help="random-timing copies per strategy")
     p.add_argument("--final", action="store_true", help=f"evaluate on the locked period from {HOLDOUT}")
+    p.add_argument("--no-cash", action="store_true", help="idle cash earns nothing (default: engine.CASH_RATE_BY_YEAR)")
     a = p.parse_args()
 
     df = pd.read_parquet(a.features)
@@ -96,8 +100,9 @@ def main() -> None:
     px = execution_prices(daily.index, a.history)
 
     weights = strategies(size, daily[f"px_vs_ma_{a.ma}d"], a.band)
-    table = pd.DataFrame({k: evaluate(w, px, a.random) for k, w in weights.items()}).T[COLS]
-    results = {k: run(w, px) for k, w in weights.items()}
+    cash = cash_rates(daily.index) if not a.no_cash else 0.0
+    table = pd.DataFrame({k: evaluate(w, px, a.random, cash) for k, w in weights.items()}).T[COLS]
+    results = {k: run(w, px, cash_rate=cash) for k, w in weights.items()}
 
     ic = information_coefficient(pred.reindex(daily.index), daily[a.target], a.target)
     period = "LOCKED FINAL TEST" if a.final else f"development period (locked from {HOLDOUT})"
